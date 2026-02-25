@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Lumina</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Подключаем Telegram Web App -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+    <div class="app">
+        <!-- Вкладки -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="today">Сегодня</button>
+            <button class="tab-btn" data-tab="habits">Привычки</button>
+            <button class="tab-btn" data-tab="timers">Таймеры</button>
+            <button class="tab-btn" data-tab="archive">Архив</button>
+        </div>
+
+        <!-- Контейнер для содержимого вкладок -->
+        <div id="content" class="content"></div>
+    </div>
+
+    <!-- Модальное окно для редактирования привычек и добавления задач -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
