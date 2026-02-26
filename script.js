@@ -5,9 +5,8 @@ let currentTab = 'today';
 let tasksToday = [];
 let habits = [];
 let history = {};          // формат: { "2025-02-25": 85, ... }
-let tasksHistory = {};     // детальные задачи по дням: { "2025-02-25": [ {name, weight, completed}, ... ] }
+let tasksHistory = {};     // детальные задачи по дням
 let timers = [];
-let timerIntervals = {};
 
 // Для архива (переключение месяцев)
 let currentArchiveDate = new Date();
@@ -16,10 +15,12 @@ let currentArchiveDate = new Date();
 tg.expand();
 tg.enableClosingConfirmation();
 
+// Загружаем данные и запускаем
 loadAllData().then(() => {
-    checkDayChange();
-    renderTab(currentTab);
-    updateBackground();
+    checkDayChange().then(() => {
+        renderTab(currentTab);
+        updateBackground();
+    });
 });
 
 // Элементы
@@ -38,6 +39,10 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         e.target.classList.add('active');
         currentTab = e.target.dataset.tab;
         renderTab(currentTab);
+        // Если переключились на вкладку таймеров, обновим отображение времени
+        if (currentTab === 'timers') {
+            updateTimersDisplay();
+        }
     });
 });
 
@@ -91,7 +96,7 @@ async function checkDayChange() {
     let today = new Date().toISOString().split('T')[0];
 
     if (lastUpdateStr !== today) {
-        // Завершаем вчерашний день
+        // Завершаем вчерашний день, если он был
         if (lastUpdateStr) {
             let totalWeight = tasksToday.filter(t => t.completed).reduce((sum, t) => sum + t.weight, 0);
             history[lastUpdateStr] = totalWeight;
@@ -107,15 +112,14 @@ async function checkDayChange() {
             await setCloudItem('tasks_history', tasksHistory);
         }
 
-        // Генерируем новый день
+        // Генерируем новый день из привычек
         generateTodayFromHabits();
 
         // Сохраняем обновлённые задачи и дату
         await setCloudItem('tasks_today', tasksToday);
         await setCloudItem('last_update', today);
     } else {
-        // День не сменился, просто загружаем задачи
-        tasksToday = await getCloudItem('tasks_today') ? JSON.parse(await getCloudItem('tasks_today')) : [];
+        // День не сменился, просто загружаем задачи (уже загружены в loadAllData)
     }
 }
 
@@ -126,14 +130,7 @@ function generateTodayFromHabits() {
     let dayOfWeek = today.getDay(); // 0 вс
 
     habits.forEach(habit => {
-        let shouldAppear = false;
-        if (habit.schedule.type === 'daily') {
-            shouldAppear = true;
-        } else if (habit.schedule.type === 'weekly') {
-            if (habit.schedule.days.includes(dayOfWeek)) shouldAppear = true;
-        }
-
-        if (shouldAppear) {
+        if (shouldHabitAppearToday(habit)) {
             tasksToday.push({
                 id: Date.now() + Math.random() + (habit.id || Math.random()),
                 name: habit.name,
@@ -143,6 +140,47 @@ function generateTodayFromHabits() {
             });
         }
     });
+}
+
+// Проверка, должна ли привычка появиться сегодня
+function shouldHabitAppearToday(habit) {
+    let today = new Date();
+    let dayOfWeek = today.getDay();
+    if (habit.schedule.type === 'daily') {
+        return true;
+    } else if (habit.schedule.type === 'weekly') {
+        return habit.schedule.days.includes(dayOfWeek);
+    }
+    return false;
+}
+
+// Добавить задачу из привычки в сегодняшний список (если её там ещё нет)
+function addTaskFromHabit(habit) {
+    // Проверяем, есть ли уже задача с таким именем (грубо, но для простоты сойдёт)
+    let exists = tasksToday.some(t => t.name === habit.name && t.timeOfDay === habit.timeOfDay);
+    if (!exists) {
+        tasksToday.push({
+            id: Date.now() + Math.random(),
+            name: habit.name,
+            weight: habit.weight,
+            timeOfDay: habit.timeOfDay,
+            completed: false
+        });
+    }
+}
+
+// Удалить задачу из сегодняшнего списка (если она там есть)
+function removeTaskFromHabit(habit) {
+    tasksToday = tasksToday.filter(t => !(t.name === habit.name && t.timeOfDay === habit.timeOfDay));
+}
+
+// Обновить задачу в сегодняшнем списке (если она изменилась)
+function updateTaskFromHabit(oldHabit, newHabit) {
+    // Сначала удаляем старую задачу, потом добавляем новую, если должна появиться
+    removeTaskFromHabit(oldHabit);
+    if (shouldHabitAppearToday(newHabit)) {
+        addTaskFromHabit(newHabit);
+    }
 }
 
 // Отрисовка текущей вкладки
@@ -192,6 +230,7 @@ function renderToday() {
             let task = tasksToday.find(t => t.id == id);
             if (task) {
                 task.completed = !task.completed;
+                // Сохраняем
                 setCloudItem('tasks_today', tasksToday);
                 renderToday();
                 updateBackground();
@@ -320,7 +359,7 @@ window.toggleScheduleDays = function() {
     document.getElementById('weekly-days').style.display = type === 'weekly' ? 'block' : 'none';
 };
 
-window.saveHabit = function(index) {
+window.saveHabit = async function(index) {
     let name = document.getElementById('habit-name').value.trim();
     let weight = parseInt(document.getElementById('habit-weight').value) || 1;
     let time = document.getElementById('habit-time').value;
@@ -333,7 +372,7 @@ window.saveHabit = function(index) {
 
     if (!name) return;
 
-    let habit = {
+    let newHabit = {
         id: index !== null && habits[index] ? habits[index].id : Date.now(),
         name,
         weight,
@@ -342,21 +381,37 @@ window.saveHabit = function(index) {
     };
 
     if (index !== null) {
-        habits[index] = habit;
+        // Редактирование: обновляем привычку и связанные задачи
+        let oldHabit = habits[index];
+        habits[index] = newHabit;
+        updateTaskFromHabit(oldHabit, newHabit);
     } else {
-        habits.push(habit);
+        // Новая привычка
+        habits.push(newHabit);
+        if (shouldHabitAppearToday(newHabit)) {
+            addTaskFromHabit(newHabit);
+        }
     }
 
-    setCloudItem('habits', habits);
+    // Сохраняем всё
+    await setCloudItem('habits', habits);
+    await setCloudItem('tasks_today', tasksToday);
     modal.style.display = 'none';
     renderHabits();
+    if (currentTab === 'today') renderToday();
+    updateBackground();
 };
 
-window.deleteHabit = function(index) {
+window.deleteHabit = async function(index) {
     if (confirm('Удалить привычку?')) {
+        let oldHabit = habits[index];
         habits.splice(index, 1);
-        setCloudItem('habits', habits);
+        removeTaskFromHabit(oldHabit);
+        await setCloudItem('habits', habits);
+        await setCloudItem('tasks_today', tasksToday);
         renderHabits();
+        if (currentTab === 'today') renderToday();
+        updateBackground();
     }
 };
 
@@ -364,18 +419,18 @@ window.editHabit = function(index) {
     showAddHabitModal(index);
 };
 
-// ==================== ВКЛАДКА ТАЙМЕРЫ ====================
+// ==================== ВКЛАДКА ТАЙМЕРЫ (исправлено) ====================
 function renderTimers() {
-    let html = '<div class="timers-list">';
+    let html = '<div class="timers-list" id="timers-list">';
     timers.forEach((timer, idx) => {
         let remaining = timer.remaining !== undefined ? timer.remaining : timer.duration * 60;
         let mins = Math.floor(remaining / 60);
         let secs = remaining % 60;
         html += `
-            <div class="timer-item" data-idx="${idx}">
+            <div class="timer-item" data-idx="${idx}" id="timer-${idx}">
                 <div class="timer-header">
                     <span class="timer-name">${timer.name}</span>
-                    <span class="timer-time">${mins}:${secs < 10 ? '0' : ''}${secs}</span>
+                    <span class="timer-time" id="timer-time-${idx}">${mins}:${secs < 10 ? '0' : ''}${secs}</span>
                 </div>
                 <div class="timer-controls">
                     <button class="timer-start ${timer.interval ? 'running' : ''}" data-idx="${idx}">${timer.interval ? 'Пауза' : 'Старт'}</button>
@@ -389,6 +444,7 @@ function renderTimers() {
     html += `<button class="add-button" onclick="showAddTimerModal()">+ Добавить таймер</button>`;
     contentDiv.innerHTML = html;
 
+    // Обработчики
     document.querySelectorAll('.timer-start').forEach(btn => {
         btn.addEventListener('click', (e) => {
             let idx = e.target.dataset.idx;
@@ -406,6 +462,20 @@ function renderTimers() {
             let idx = e.target.dataset.idx;
             deleteTimer(idx);
         });
+    });
+}
+
+// Функция обновления отображения времени для всех таймеров (без перерисовки)
+function updateTimersDisplay() {
+    if (currentTab !== 'timers') return; // не обновляем, если не на вкладке таймеров
+    timers.forEach((timer, idx) => {
+        let remaining = timer.remaining !== undefined ? timer.remaining : timer.duration * 60;
+        let mins = Math.floor(remaining / 60);
+        let secs = remaining % 60;
+        let timeSpan = document.getElementById(`timer-time-${idx}`);
+        if (timeSpan) {
+            timeSpan.textContent = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        }
     });
 }
 
@@ -459,11 +529,17 @@ function toggleTimer(idx) {
                 timer.remaining = 0;
                 tg.HapticFeedback.notificationOccurred('success');
             }
-            renderTimers();
+            // Обновляем отображение, только если активна вкладка таймеров
+            if (currentTab === 'timers') {
+                updateTimersDisplay();
+            }
         }, 1000);
     }
     saveTimersToLocal();
-    renderTimers();
+    // Обновим кнопку Старт/Пауза
+    if (currentTab === 'timers') {
+        renderTimers(); // перерисуем, чтобы обновить класс кнопки
+    }
 }
 
 function stopTimer(idx) {
@@ -474,14 +550,18 @@ function stopTimer(idx) {
     }
     timer.remaining = timer.duration * 60;
     saveTimersToLocal();
-    renderTimers();
+    if (currentTab === 'timers') {
+        renderTimers();
+    }
 }
 
 function deleteTimer(idx) {
     if (timers[idx].interval) clearInterval(timers[idx].interval);
     timers.splice(idx, 1);
     saveTimersToLocal();
-    renderTimers();
+    if (currentTab === 'timers') {
+        renderTimers();
+    }
 }
 
 function saveTimersToLocal() {
@@ -575,7 +655,7 @@ function updateBackground() {
         }
     }
 
-    // Божественное свечение — добавляем класс к .app
+    // Божественное свечение
     let appDiv = document.querySelector('.app');
     if (appDiv) {
         if (total > 100) {
