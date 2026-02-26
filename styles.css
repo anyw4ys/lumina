@@ -70,16 +70,21 @@ body {
     color: #000;
 }
 
-/* Свечение Divine Mode */
+/* НОВОЕ СВЕЧЕНИЕ — РАДУЖНОЕ ДЫХАНИЕ */
 .divine-glow {
-    box-shadow: 0 0 30px #fff, 0 0 60px #fff;
-    animation: pulse 2s infinite;
+    animation: neonGlow 2s infinite alternate;
 }
 
-@keyframes pulse {
-    0% { opacity: 0.8; }
-    50% { opacity: 1; }
-    100% { opacity: 0.8; }
+@keyframes neonGlow {
+    0% {
+        box-shadow: 0 0 20px #ff00ff, 0 0 40px #00ffff, 0 0 60px #ffff00;
+    }
+    50% {
+        box-shadow: 0 0 30px #ff6600, 0 0 60px #ff00ff, 0 0 90px #00ff00;
+    }
+    100% {
+        box-shadow: 0 0 20px #00ffff, 0 0 40px #ff00ff, 0 0 60px #ff0000;
+    }
 }
 
 /* Стили для задач */
