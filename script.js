@@ -1,18 +1,21 @@
 // Глобальные переменные
 let tg = window.Telegram.WebApp;
-let userId = tg.initDataUnsafe?.user?.id || 'test_user'; // для теста без телеграма
+let userId = tg.initDataUnsafe?.user?.id || 'test_user';
 let currentTab = 'today';
 let tasksToday = [];
 let habits = [];
-let history = {};
+let history = {};          // формат: { "2025-02-25": 85, ... }
+let tasksHistory = {};     // детальные задачи по дням: { "2025-02-25": [ {name, weight, completed}, ... ] }
 let timers = [];
 let timerIntervals = {};
 
-// Инициализация
-tg.expand(); // развернуть на весь экран
-tg.enableClosingConfirmation(); // спросить при закрытии
+// Для архива (переключение месяцев)
+let currentArchiveDate = new Date();
 
-// Загружаем данные из CloudStorage
+// Инициализация
+tg.expand();
+tg.enableClosingConfirmation();
+
 loadAllData().then(() => {
     checkDayChange();
     renderTab(currentTab);
@@ -40,30 +43,31 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // Загрузка всех данных из CloudStorage
 async function loadAllData() {
-    // Пытаемся получить данные из CloudStorage Telegram
     if (tg.CloudStorage) {
         try {
             let tasksStr = await getCloudItem('tasks_today');
             tasksToday = tasksStr ? JSON.parse(tasksStr) : [];
-            
+
             let habitsStr = await getCloudItem('habits');
             habits = habitsStr ? JSON.parse(habitsStr) : [];
-            
+
             let historyStr = await getCloudItem('history');
             history = historyStr ? JSON.parse(historyStr) : {};
+
+            let tasksHistoryStr = await getCloudItem('tasks_history');
+            tasksHistory = tasksHistoryStr ? JSON.parse(tasksHistoryStr) : {};
         } catch (e) {
             console.error('Ошибка загрузки', e);
-            // По умолчанию пусто
         }
     } else {
         // Эмуляция для теста вне Telegram
         tasksToday = [];
         habits = [];
         history = {};
+        tasksHistory = {};
     }
 }
 
-// Получить элемент из CloudStorage (промис)
 function getCloudItem(key) {
     return new Promise((resolve) => {
         tg.CloudStorage.getItem(key, (err, value) => {
@@ -73,7 +77,6 @@ function getCloudItem(key) {
     });
 }
 
-// Сохранить элемент в CloudStorage
 function setCloudItem(key, value) {
     return new Promise((resolve) => {
         tg.CloudStorage.setItem(key, JSON.stringify(value), (err, ok) => {
@@ -86,18 +89,27 @@ function setCloudItem(key, value) {
 async function checkDayChange() {
     let lastUpdateStr = await getCloudItem('last_update');
     let today = new Date().toISOString().split('T')[0];
-    
+
     if (lastUpdateStr !== today) {
         // Завершаем вчерашний день
         if (lastUpdateStr) {
             let totalWeight = tasksToday.filter(t => t.completed).reduce((sum, t) => sum + t.weight, 0);
             history[lastUpdateStr] = totalWeight;
             await setCloudItem('history', history);
+
+            // Сохраняем детальные задачи за вчера
+            tasksHistory[lastUpdateStr] = tasksToday.map(t => ({
+                name: t.name,
+                weight: t.weight,
+                completed: t.completed,
+                timeOfDay: t.timeOfDay
+            }));
+            await setCloudItem('tasks_history', tasksHistory);
         }
-        
+
         // Генерируем новый день
         generateTodayFromHabits();
-        
+
         // Сохраняем обновлённые задачи и дату
         await setCloudItem('tasks_today', tasksToday);
         await setCloudItem('last_update', today);
@@ -111,21 +123,19 @@ async function checkDayChange() {
 function generateTodayFromHabits() {
     tasksToday = [];
     let today = new Date();
-    let dayOfWeek = today.getDay(); // 0 вс, 1 пн, ..., 6 сб
-    
+    let dayOfWeek = today.getDay(); // 0 вс
+
     habits.forEach(habit => {
-        // Проверяем расписание
         let shouldAppear = false;
         if (habit.schedule.type === 'daily') {
             shouldAppear = true;
         } else if (habit.schedule.type === 'weekly') {
-            // В weekly храним массив дней (0-6)
             if (habit.schedule.days.includes(dayOfWeek)) shouldAppear = true;
         }
-        
+
         if (shouldAppear) {
             tasksToday.push({
-                id: Date.now() + Math.random() + habit.id, // уникальный id
+                id: Date.now() + Math.random() + (habit.id || Math.random()),
                 name: habit.name,
                 weight: habit.weight,
                 timeOfDay: habit.timeOfDay,
@@ -149,14 +159,14 @@ function renderTab(tab) {
 function renderToday() {
     let groups = { morning: [], afternoon: [], evening: [] };
     tasksToday.forEach(task => groups[task.timeOfDay]?.push(task));
-    
+
     let html = '';
     const times = {
-        morning: '🌅 Утро',
-        afternoon: '☀️ День',
-        evening: '🌙 Вечер'
+        morning: 'Утро',
+        afternoon: 'День',
+        evening: 'Вечер'
     };
-    
+
     for (let [key, title] of Object.entries(times)) {
         if (groups[key].length > 0) {
             html += `<div class="task-group"><div class="group-title">${title}</div>`;
@@ -172,11 +182,10 @@ function renderToday() {
             html += '</div>';
         }
     }
-    
+
     html += `<button class="add-button" onclick="showAddTaskModal()">+ Добавить задачу</button>`;
     contentDiv.innerHTML = html;
-    
-    // Обработчики чекбоксов
+
     document.querySelectorAll('.task-checkbox').forEach(cb => {
         cb.addEventListener('click', (e) => {
             let id = e.target.dataset.id;
@@ -186,19 +195,18 @@ function renderToday() {
                 setCloudItem('tasks_today', tasksToday);
                 renderToday();
                 updateBackground();
-                if (task.completed) tg.HapticFeedback.impactOccurred('medium'); // вибрация
+                if (task.completed) tg.HapticFeedback.impactOccurred('medium');
             }
         });
     });
 }
 
-// Модалка добавления задачи
 function showAddTaskModal() {
     modalBody.innerHTML = `
         <h3>Новая задача</h3>
         <div class="form-group">
             <label>Название</label>
-            <input type="text" id="task-name" placeholder="Например: Помыть посуду">
+            <input type="text" id="task-name" placeholder="">
         </div>
         <div class="form-group">
             <label>Вес (%)</label>
@@ -220,14 +228,13 @@ function showAddTaskModal() {
     modal.style.display = 'flex';
 }
 
-// Добавление задачи
 window.addTask = function() {
-    let name = document.getElementById('task-name').value;
+    let name = document.getElementById('task-name').value.trim();
     let weight = parseInt(document.getElementById('task-weight').value) || 1;
     let time = document.getElementById('task-time').value;
-    
+
     if (!name) return;
-    
+
     tasksToday.push({
         id: Date.now(),
         name,
@@ -235,7 +242,7 @@ window.addTask = function() {
         timeOfDay: time,
         completed: false
     });
-    
+
     setCloudItem('tasks_today', tasksToday);
     modal.style.display = 'none';
     renderToday();
@@ -246,7 +253,7 @@ window.addTask = function() {
 function renderHabits() {
     let html = '<div class="habits-list">';
     habits.forEach((habit, index) => {
-        let scheduleText = habit.schedule.type === 'daily' ? 'Каждый день' : 
+        let scheduleText = habit.schedule.type === 'daily' ? 'Каждый день' :
             `По дням: ${habit.schedule.days.map(d => ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'][d]).join(', ')}`;
         html += `
             <div class="habit-item">
@@ -266,10 +273,9 @@ function renderHabits() {
     contentDiv.innerHTML = html;
 }
 
-// Модалка добавления привычки
 function showAddHabitModal(existingIndex = null) {
     let habit = existingIndex !== null ? habits[existingIndex] : null;
-    
+
     modalBody.innerHTML = `
         <h3>${habit ? 'Редактировать' : 'Новая'} привычка</h3>
         <div class="form-group">
@@ -315,7 +321,7 @@ window.toggleScheduleDays = function() {
 };
 
 window.saveHabit = function(index) {
-    let name = document.getElementById('habit-name').value;
+    let name = document.getElementById('habit-name').value.trim();
     let weight = parseInt(document.getElementById('habit-weight').value) || 1;
     let time = document.getElementById('habit-time').value;
     let type = document.getElementById('schedule-type').value;
@@ -324,7 +330,9 @@ window.saveHabit = function(index) {
         let input = document.getElementById('weekly-days-input').value;
         days = input.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n >=0 && n <=6);
     }
-    
+
+    if (!name) return;
+
     let habit = {
         id: index !== null && habits[index] ? habits[index].id : Date.now(),
         name,
@@ -332,13 +340,13 @@ window.saveHabit = function(index) {
         timeOfDay: time,
         schedule: { type, days }
     };
-    
+
     if (index !== null) {
         habits[index] = habit;
     } else {
         habits.push(habit);
     }
-    
+
     setCloudItem('habits', habits);
     modal.style.display = 'none';
     renderHabits();
@@ -380,8 +388,7 @@ function renderTimers() {
     html += '</div>';
     html += `<button class="add-button" onclick="showAddTimerModal()">+ Добавить таймер</button>`;
     contentDiv.innerHTML = html;
-    
-    // Обработчики
+
     document.querySelectorAll('.timer-start').forEach(btn => {
         btn.addEventListener('click', (e) => {
             let idx = e.target.dataset.idx;
@@ -407,7 +414,7 @@ function showAddTimerModal() {
         <h3>Новый таймер</h3>
         <div class="form-group">
             <label>Название</label>
-            <input type="text" id="timer-name">
+            <input type="text" id="timer-name" placeholder="">
         </div>
         <div class="form-group">
             <label>Длительность (минуты)</label>
@@ -422,10 +429,10 @@ function showAddTimerModal() {
 }
 
 window.addTimer = function() {
-    let name = document.getElementById('timer-name').value;
+    let name = document.getElementById('timer-name').value.trim();
     let duration = parseInt(document.getElementById('timer-duration').value) || 25;
     if (!name) return;
-    
+
     timers.push({
         name,
         duration,
@@ -450,10 +457,9 @@ function toggleTimer(idx) {
                 clearInterval(timer.interval);
                 timer.interval = null;
                 timer.remaining = 0;
-                tg.HapticFeedback.notificationOccurred('success'); // вибрация
-                // Можно показать уведомление
+                tg.HapticFeedback.notificationOccurred('success');
             }
-            renderTimers(); // обновляем каждую секунду
+            renderTimers();
         }, 1000);
     }
     saveTimersToLocal();
@@ -486,57 +492,69 @@ function saveTimersToLocal() {
 let savedTimers = localStorage.getItem('timers');
 if (savedTimers) {
     timers = JSON.parse(savedTimers);
-    // Восстанавливаем оставшееся время (оно могло устареть)
     timers.forEach(t => {
         if (t.remaining === undefined) t.remaining = t.duration * 60;
+        t.interval = null; // интервалы не сохраняем
     });
 }
 
 // ==================== ВКЛАДКА АРХИВ ====================
 function renderArchive() {
-    let now = new Date();
-    let year = now.getFullYear();
-    let month = now.getMonth();
-    
+    let year = currentArchiveDate.getFullYear();
+    let month = currentArchiveDate.getMonth();
+
     let firstDay = new Date(year, month, 1);
-    let startDay = firstDay.getDay(); // день недели первого числа (0 вс)
+    let startDay = firstDay.getDay(); // 0 вс
     let daysInMonth = new Date(year, month + 1, 0).getDate();
-    
+
+    let monthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+    let monthName = monthNames[month];
+
     let html = `
         <div class="calendar-header">
-            <button onclick="changeMonth(-1)">◀</button>
-            <span class="calendar-month">${now.toLocaleString('ru', { month: 'long', year: 'numeric' })}</span>
-            <button onclick="changeMonth(1)">▶</button>
+            <button class="month-nav" onclick="changeMonth(-1)">◀</button>
+            <span class="calendar-month">${monthName} ${year}</span>
+            <button class="month-nav" onclick="changeMonth(1)">▶</button>
         </div>
         <div class="calendar-grid">
     `;
-    
+
     // Пустые ячейки до первого дня
     for (let i = 0; i < startDay; i++) {
-        html += `<div class="calendar-day" style="background: #111;"></div>`;
+        html += `<div class="calendar-day empty"></div>`;
     }
-    
+
     for (let d = 1; d <= daysInMonth; d++) {
         let dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
         let percent = history[dateStr] || 0;
         let brightness = Math.min(255, Math.floor(255 * percent / 100));
         let color = `rgb(${brightness}, ${brightness}, ${brightness})`;
-        html += `<div class="calendar-day" style="background: ${color}; color: ${brightness > 128 ? '#000' : '#fff'};" onclick="showDayDetails('${dateStr}')">${d}</div>`;
+        let textColor = brightness > 128 ? '#000' : '#fff';
+        html += `<div class="calendar-day" style="background: ${color}; color: ${textColor};" onclick="showDayDetails('${dateStr}')">${d}</div>`;
     }
-    
+
     html += '</div>';
     contentDiv.innerHTML = html;
 }
 
 window.changeMonth = function(delta) {
-    // Для упрощения просто перезагрузим страницу с новым месяцем? В реальном приложении нужно хранить текущий месяц.
-    // Пока можно просто показать сообщение, что функциональность в разработке.
-    alert('Переключение месяца будет добавлено позже');
+    currentArchiveDate.setMonth(currentArchiveDate.getMonth() + delta);
+    renderArchive();
 };
 
 window.showDayDetails = function(dateStr) {
     let percent = history[dateStr] || 0;
-    alert(`Дата: ${dateStr}\nПрогресс: ${percent}%`);
+    let tasks = tasksHistory[dateStr] || [];
+    let tasksHtml = tasks.length ? tasks.map(t => `${t.name} (${t.weight}%) ${t.completed ? '✅' : '❌'}`).join('<br>') : 'Нет задач';
+    modalBody.innerHTML = `
+        <h3>${dateStr}</h3>
+        <p>Прогресс: ${percent}%</p>
+        <div>${tasksHtml}</div>
+        <div class="form-actions">
+            <button class="btn-primary" onclick="closeModal()">OK</button>
+        </div>
+    `;
+    modal.style.display = 'flex';
 };
 
 // ==================== ОБНОВЛЕНИЕ ФОНА ====================
@@ -545,8 +563,7 @@ function updateBackground() {
     let brightness = Math.min(255, Math.floor(255 * total / 100));
     let bgColor = `rgb(${brightness}, ${brightness}, ${brightness})`;
     document.body.style.backgroundColor = bgColor;
-    
-    // Цвет текста
+
     let content = document.querySelector('.content');
     if (content) {
         if (brightness > 128) {
@@ -557,12 +574,15 @@ function updateBackground() {
             content.classList.add('light-text');
         }
     }
-    
-    // Божественное свечение
-    if (total > 100) {
-        document.querySelector('.app').classList.add('divine-glow');
-    } else {
-        document.querySelector('.app')?.classList.remove('divine-glow');
+
+    // Божественное свечение — добавляем класс к .app
+    let appDiv = document.querySelector('.app');
+    if (appDiv) {
+        if (total > 100) {
+            appDiv.classList.add('divine-glow');
+        } else {
+            appDiv.classList.remove('divine-glow');
+        }
     }
 }
 
